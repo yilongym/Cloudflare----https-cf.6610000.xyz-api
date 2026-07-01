@@ -13,10 +13,10 @@ jobs:
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4 # 升级到 v4，消除警告
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v5 # 升级到 v5，消除警告
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
@@ -36,7 +36,7 @@ jobs:
         if [ -f "cloudflare_proxies.txt" ]; then
           git add cloudflare_proxies.txt
           if ! git diff --cached --quiet; then
-            git commit -m "自动更新: 优选IP列表已更新 ($(date +'%Y-%m-%d %H:%M:%S'))"
+            git commit -m "自动更新: 22个全量优选IP列表已更新"
             git push
           else
             echo "数据未发生变化，无需提交"
