@@ -1,11 +1,11 @@
 import os
 import re
-import concurrent.futures
 import requests
+from bs4 import BeautifulSoup
 
 OUTPUT_FILE = "cloudflare_proxies.txt"
 
-# 1. 穷举所有在面板中可能出现的省份双拼前缀
+# 省份转换字典
 PROV_MAP = {
     "cq": "重庆", "fj": "福建", "gd": "广东", "gx": "广西", "gz": "贵州", 
     "js": "江苏", "jx": "江西", "ln": "辽宁", "sd": "山东", "sh": "上海", 
@@ -15,95 +15,121 @@ PROV_MAP = {
     "nx": "宁夏", "xj": "新疆", "xz": "西藏", "hi": "海南", "nm": "内蒙古"
 }
 
-# 2. 穷举所有运营商前缀
-ISP_MAP = {
-    "ct": "中国电信",
-    "cm": "中国移动",
-    "cu": "中国联通"
-}
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-def check_domain_and_get_info(domain, province, isp):
-    """
-    独立线程：检测目标子域名是否存在以及对应的具体节点名称
-    """
-    # 针对 IPv6 域名做兼容处理
-    test_domain = domain if "v6" not in domain else f"v6.{domain.replace('.v6', '')}"
-    url = f"https://{test_domain}/"
-    
+def get_ip_location(domain):
+    """通过解析接口获取域名的落地真实数据中心和归属地"""
     try:
-        # 只请求头部或设置超短超时，快速筛查
-        res = requests.head(url, headers=headers, timeout=4)
-        if res.status_code < 500: # 只要不是服务器彻底挂掉，说明域名解析且绑定成功
-            # 默认归属地信息补充
-            node_name = "东京 · NRT"
-            if "cm" in domain:
-                node_name = "香港 · HKG"
-            elif "cu" in domain:
-                node_name = "洛杉矶 · LAX"
+        # 1. 优先获取域名的真实 IP
+        import socket
+        ip = socket.gethostbyname(domain)
+        
+        # 2. 调用公开接口查询
+        response = requests.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                city = data.get("city", "未知城市")
+                org = data.get("org", "")
+                # 提取 Cloudflare 机房三字码（如 NRT, HKG）或运营商
+                match_colo = re.search(r'([A-Z]{3})', org)
+                colo = match_colo.group(1) if match_colo else "Anycast"
                 
-            # 格式化输出
-            return f"{domain}:443#{node_name}-【{province} · {isp}-优选】"
-    except:
-        pass
-    return None
+                # 特殊机房常见映射缩写
+                if "Tokyo" in city or "NRT" in org:
+                    return "东京 · NRT"
+                elif "Hong Kong" in city or "HKG" in org:
+                    return "香港 · HKG"
+                elif "Singapore" in city or "SIN" in org:
+                    return "新加坡 · SIN"
+                elif "San Jose" in city or "SJC" in org:
+                    return "圣何塞 · SJC"
+                elif "Los Angeles" in city or "LAX" in org:
+                    return "洛杉矶 · LAX"
+                
+                return f"{city} · {colo}"
+    except Exception as e:
+        print(f"域名 {domain} 解析失败: {e}")
+    return "归属未知"
 
-def scan_all_panel_domains():
-    print("开始执行全网域名前缀穷举探测扫描...")
-    possible_tasks = []
-    results = []
-    
-    # 3. 循环组合生成所有的 IPv4 和 IPv6 候选域名
-    for p_code, p_name in PROV_MAP.items():
-        for i_code, i_name in ISP_MAP.items():
-            # 组合标准的 IPv4 域名，例如: cq.ct.6610000.xyz
-            v4_domain = f"{p_code}.{i_code}.6610000.xyz"
-            possible_tasks.append((v4_domain, p_name, i_name))
+def extract_all_22_domains():
+    domains = set()
+    base_url = "https://cf.6610000.xyz/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    try:
+        print("第一步：正在读取主页源码...")
+        res = requests.get(base_url, headers=headers, timeout=10)
+        res.encoding = 'utf-8'
+        html_text = res.text
+        
+        # 提取主页中直接包含的域名
+        for d in re.findall(r'([a-zA-Z0-9\.-]+\.6610000\.xyz)', html_text):
+            domains.add(d.lower())
             
-            # 组合标准的 IPv6 域名，例如: cq.cu.v6.6610000.xyz
-            v6_domain = f"{p_code}.{i_code}.v6.6610000.xyz"
-            possible_tasks.append((v6_domain, p_name, i_name))
+        # 第二步：提取主页里引用的所有 JS 配置文件
+        soup = BeautifulSoup(html_text, 'html.parser')
+        script_tags = soup.find_all('script')
+        
+        for script in script_tags:
+            src = script.get('src')
+            if src:
+                # 补全相对路径
+                js_url = src if src.startswith('http') else base_url + src.lstrip('/')
+                print(f"发现前端 JS 配置文件，正在深度扫描: {js_url}")
+                try:
+                    js_res = requests.get(js_url, headers=headers, timeout=5)
+                    for d in re.findall(r'([a-zA-Z0-9\.-]+\.6610000\.xyz)', js_res.text):
+                        domains.add(d.lower())
+                except:
+                    continue
 
-    # 4. 开启 30 个多线程高并发扫描，确保在 15 秒内全部检测完毕
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        future_to_domain = {
-            executor.submit(check_domain_and_get_info, task[0], task[1], task[2]): task[0] 
-            for task in possible_tasks
-        }
-        for future in concurrent.futures.as_completed(future_to_domain):
-            res_line = future.result()
-            if res_line:
-                print(f"🎯 成功捕获在线节点: {res_line}")
-                results.append(res_line)
-                
-    # 5. 极强兜底：如果在外部因为网络波动一个都没扫到，依然保留原有基础节点
-    if not results:
-        print("网络出现硬直，启用静态卡片备份集...")
-        backup_list = [
-            "cq.ct.6610000.xyz:443#东京 · NRT-【重庆 · 中国电信-优选】",
-            "fj.ct.6610000.xyz:443#归属未知-【福建 · 中国电信-优选】",
-            "gd.ct.6610000.xyz:443#圣何塞 · SJC-【广东 · 中国电信-优选】",
-            "gd.cm.6610000.xyz:443#香港 · HKG-【广东 · 中国移动-优选】",
-            "gx.ct.6610000.xyz:443#新加坡 · SIN-【广西 · 中国电信-优选】",
-            "gx.cu.6610000.xyz:443#首尔 · ICN-【广西 · 中国联通-优选】",
-            "gz.cu.6610000.xyz:443#洛杉矶 · LAX-【贵州 · 中国联通-优选】",
-            "gz.cu.v6.6610000.xyz:443#洛杉矶 · LAX-【贵州 · 中国联通-优选】",
-            "js.cu.6610000.xyz:443#法兰克福 · FRA-【江苏 · 中国联通-优选】"
-        ]
-        return backup_list
+    except Exception as e:
+        print(f"抓取异常: {e}")
+
+    results = []
+    print(f"\n清洗去重完毕，共发现 {len(domains)} 个目标节点。开始智能匹配格式...")
+    
+    for d in domains:
+        # 过滤主域名
+        if d in ["6610000.xyz", "cf.6610000.xyz"]:
+            continue
+            
+        # 拆解前缀（如 cq.ct.6610000.xyz -> cq, ct）
+        parts = d.split('.')
+        prefix = parts[0] if len(parts) > 0 else ""
+        isp_code = parts[1] if len(parts) > 1 else ""
+        
+        province = PROV_MAP.get(prefix, "优选")
+        # 针对无法直接识别的双拼（如 sc、yn等新节点），将其首字母大写作为备份名
+        if province == "优选" and prefix:
+            province = prefix.upper()
+            
+        if "ct" in isp_code:
+            isp = "中国电信"
+        elif "cm" in isp_code:
+            isp = "中国移动"
+        elif "cu" in isp_code:
+            isp = "中国联通"
+        else:
+            isp = "中国电信" # 默认兜底
+            
+        # 线上精确解析该节点的落地机房
+        node_geo = get_ip_location(d)
+        
+        # 组装成标准格式
+        formatted_line = f"{d}:443#{node_geo}-【{province} · {isp}-优选】"
+        results.append(formatted_line)
+        print(f"已整理 -> {formatted_line}")
 
     return results
 
 if __name__ == "__main__":
-    ip_list = scan_all_panel_domains()
-    
-    # 去重并排序
-    ip_list = sorted(list(set(ip_list)))
-    
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(ip_list))
-        
-    print(f"\n🎉 扫描完毕！本次一共全量导出 {len(ip_list)} 行优选记录到 {OUTPUT_FILE}！")
+    final_list = extract_all_22_domains()
+    if final_list:
+        final_list = sorted(list(set(final_list)))
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(final_list))
+        print(f"\n🎉 大功告成！已成功将所有 {len(final_list)} 个节点完整写入到 {OUTPUT_FILE}")
+    else:
+        print("未提取到域名数据。")
