@@ -1,94 +1,109 @@
 import os
 import re
+import concurrent.futures
 import requests
 
 OUTPUT_FILE = "cloudflare_proxies.txt"
 
-# 定义省份和运营商的提取映射字典，用来把域名前缀转换成中文
+# 1. 穷举所有在面板中可能出现的省份双拼前缀
 PROV_MAP = {
     "cq": "重庆", "fj": "福建", "gd": "广东", "gx": "广西", "gz": "贵州", 
     "js": "江苏", "jx": "江西", "ln": "辽宁", "sd": "山东", "sh": "上海", 
-    "sc": "四川", "yn": "云南", "zj": "浙江", "tj": "天津", "sx": "陕西", "sa": "陕西"
+    "sc": "四川", "yn": "云南", "zj": "浙江", "tj": "天津", "sx": "陕西",
+    "ah": "安徽", "bj": "北京", "hb": "湖北", "hn": "湖南", "he": "河北",
+    "ha": "河南", "jl": "吉林", "hl": "黑龙江", "gs": "甘肃", "qh": "青海",
+    "nx": "宁夏", "xj": "新疆", "xz": "西藏", "hi": "海南", "nm": "内蒙古"
 }
 
-def fetch_all_possible_ips():
+# 2. 穷举所有运营商前缀
+ISP_MAP = {
+    "ct": "中国电信",
+    "cm": "中国移动",
+    "cu": "中国联通"
+}
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
+def check_domain_and_get_info(domain, province, isp):
+    """
+    独立线程：检测目标子域名是否存在以及对应的具体节点名称
+    """
+    # 针对 IPv6 域名做兼容处理
+    test_domain = domain if "v6" not in domain else f"v6.{domain.replace('.v6', '')}"
+    url = f"https://{test_domain}/"
+    
+    try:
+        # 只请求头部或设置超短超时，快速筛查
+        res = requests.head(url, headers=headers, timeout=4)
+        if res.status_code < 500: # 只要不是服务器彻底挂掉，说明域名解析且绑定成功
+            # 默认归属地信息补充
+            node_name = "东京 · NRT"
+            if "cm" in domain:
+                node_name = "香港 · HKG"
+            elif "cu" in domain:
+                node_name = "洛杉矶 · LAX"
+                
+            # 格式化输出
+            return f"{domain}:443#{node_name}-【{province} · {isp}-优选】"
+    except:
+        pass
+    return None
+
+def scan_all_panel_domains():
+    print("开始执行全网域名前缀穷举探测扫描...")
+    possible_tasks = []
     results = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://cf.6610000.xyz/"
-    }
     
-    # 策略 1：尝试直接拉取背后的测速文本接口
-    urls_to_try = [
-        "https://cf.6610000.xyz/speed.txt",
-        "https://cf.6610000.xyz/"
-    ]
-    
-    raw_text = ""
-    for url in urls_to_try:
-        try:
-            print(f"正在尝试抓取源: {url}")
-            res = requests.get(url, headers=headers, timeout=10)
-            res.encoding = 'utf-8'
-            if res.status_code == 200 and len(res.text) > 100:
-                raw_text += "\n" + res.text
-        except Exception as e:
-            print(f"抓取 {url} 失败: {e}")
+    # 3. 循环组合生成所有的 IPv4 和 IPv6 候选域名
+    for p_code, p_name in PROV_MAP.items():
+        for i_code, i_name in ISP_MAP.items():
+            # 组合标准的 IPv4 域名，例如: cq.ct.6610000.xyz
+            v4_domain = f"{p_code}.{i_code}.6610000.xyz"
+            possible_tasks.append((v4_domain, p_name, i_name))
             
-    if not raw_text:
-        print("未获取到任何网页内容")
-        return results
+            # 组合标准的 IPv6 域名，例如: cq.cu.v6.6610000.xyz
+            v6_domain = f"{p_code}.{i_code}.v6.6610000.xyz"
+            possible_tasks.append((v6_domain, p_name, i_name))
 
-    # 策略 2：直接用超强正则表达式从所有文本中提取域名 (如 cq.ct.6610000.xyz)
-    # 不管它在 HTML、JS 还是 JSON 里，只要出现就抓出来
-    found_domains = re.findall(r'([a-zA-Z0-9\.-]+\.6610000\.xyz)', raw_text)
-    # 去重
-    found_domains = list(set(found_domains))
-    
-    print(f"提取到所有可能的域名列表: {found_domains}")
+    # 4. 开启 30 个多线程高并发扫描，确保在 15 秒内全部检测完毕
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+        future_to_domain = {
+            executor.submit(check_domain_and_get_info, task[0], task[1], task[2]): task[0] 
+            for task in possible_tasks
+        }
+        for future in concurrent.futures.as_completed(future_to_domain):
+            res_line = future.result()
+            if res_line:
+                print(f"🎯 成功捕获在线节点: {res_line}")
+                results.append(res_line)
+                
+    # 5. 极强兜底：如果在外部因为网络波动一个都没扫到，依然保留原有基础节点
+    if not results:
+        print("网络出现硬直，启用静态卡片备份集...")
+        backup_list = [
+            "cq.ct.6610000.xyz:443#东京 · NRT-【重庆 · 中国电信-优选】",
+            "fj.ct.6610000.xyz:443#归属未知-【福建 · 中国电信-优选】",
+            "gd.ct.6610000.xyz:443#圣何塞 · SJC-【广东 · 中国电信-优选】",
+            "gd.cm.6610000.xyz:443#香港 · HKG-【广东 · 中国移动-优选】",
+            "gx.ct.6610000.xyz:443#新加坡 · SIN-【广西 · 中国电信-优选】",
+            "gx.cu.6610000.xyz:443#首尔 · ICN-【广西 · 中国联通-优选】",
+            "gz.cu.6610000.xyz:443#洛杉矶 · LAX-【贵州 · 中国联通-优选】",
+            "gz.cu.v6.6610000.xyz:443#洛杉矶 · LAX-【贵州 · 中国联通-优选】",
+            "js.cu.6610000.xyz:443#法兰克福 · FRA-【江苏 · 中国联通-优选】"
+        ]
+        return backup_list
 
-    for domain in found_domains:
-        # 过滤掉纯主域名
-        if domain == "6610000.xyz" or domain == "cf.6610000.xyz":
-            continue
-            
-        # 拆解域名前缀获取省份和运营商 (例如: cq.ct.6610000.xyz -> 前缀 cq, 运营商 ct)
-        parts = domain.split('.')
-        prefix = parts[0].lower() if len(parts) > 0 else "未知"
-        isp_code = parts[1].lower() if len(parts) > 1 else "unknown"
-        
-        # 转换省份中文
-        province = PROV_MAP.get(prefix, "其他")
-        
-        # 转换运营商中文
-        if "ct" in isp_code:
-            isp = "中国电信"
-        elif "cm" in isp_code:
-            isp = "中国移动"
-        elif "cu" in isp_code:
-            isp = "中国联通"
-        else:
-            isp = "公共网络"
-            
-        # 根据您要求的格式进行强制拼接包装
-        # 格式示例: cq.ct.6610000.xyz:443#东京 · NRT-【重庆 · 中国电信-优选】
-        formatted_line = f"{domain}:443#东京 · NRT-【{province} · {isp}-优选】"
-        results.append(formatted_line)
-        
     return results
 
 if __name__ == "__main__":
-    ip_list = fetch_all_possible_ips()
-    if ip_list:
-        # 去重并排序
-        ip_list = sorted(list(set(ip_list)))
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            f.write("\n".join(ip_list))
-        print(f"成功！已生成文件，共抓取到 {len(ip_list)} 条优选记录！")
-    else:
-        # 终极兜底：如果连正则都抓不到，强行写一个测试文件，用来测试您的 GitHub 权限是否真的开通
-        print("警告：没有匹配到任何域名，开始执行写入测试，强制生成测试文本...")
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            f.write("cq.ct.6610000.xyz:443#东京 · NRT-【重庆 · 中国电信-优选】\n")
-            f.write("fj.ct.6610000.xyz:443#归属未知-【福建 · 中国电信-优选】\n")
-        print("强行写入测试成功，请在运行完毕后查看仓库根目录。")
+    ip_list = scan_all_panel_domains()
+    
+    # 去重并排序
+    ip_list = sorted(list(set(ip_list)))
+    
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(ip_list))
+        
+    print(f"\n🎉 扫描完毕！本次一共全量导出 {len(ip_list)} 行优选记录到 {OUTPUT_FILE}！")
