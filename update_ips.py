@@ -1,9 +1,10 @@
 import os
+import re
 import requests
 
 OUTPUT_FILE = "cloudflare_proxies.txt"
 
-# 固定的省份/运营商代码映射（用于将域名中的前缀动态翻译为中文）
+# 省份/运营商代码映射字典
 PROV_MAP = {
     "cq": "重庆", "fj": "福建", "gd": "广东", "gx": "广西", "gz": "贵州", 
     "js": "江苏", "jx": "江西", "ln": "辽宁", "sd": "山东", "sh": "上海", 
@@ -13,49 +14,38 @@ PROV_MAP = {
     "nx": "宁夏", "xj": "新疆", "xz": "西藏", "hi": "海南", "nm": "内蒙古"
 }
 
-def fetch_all_dynamic_nodes():
-    # 核心：10000cf.ip 项目真正的后端动态测速全量 JSON 数据库接口
-    json_url = "https://raw.githubusercontent.com/10000get/10000cf.ip/main/data.json"
+def parse_nodes_from_web():
+    # 面板的真实前端访问地址（这里我使用了您截图里展示的域名）
+    url = "https://cf.6610000.xyz"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     results = []
     try:
-        print("正在向汇聚面板的动态数据源头请求实时数据...")
-        res = requests.get(json_url, headers=headers, timeout=15)
+        print(f"正在读取网页实时内容: {url} ...")
+        res = requests.get(url, headers=headers, timeout=15)
+        res.encoding = 'utf-8'
         
         if res.status_code == 200:
-            data = res.json()
+            html_text = res.text
             
-            # 兼容处理：支持直接是列表，或者嵌套在 info/nodes 里的结构
-            if isinstance(data, list):
-                nodes_list = data
-            elif isinstance(data, dict):
-                nodes_list = data.get("nodes", data.get("info", []))
-            else:
-                nodes_list = []
-                
-            print(f"✅ 成功连接接口！当前线上一共有 {len(nodes_list)} 个动态卡片，开始洗数...")
+            # 使用强大的正则表达式，精确抓取网页渲染脚本或HTML里含有的所有 6610000.xyz 优选子域名
+            # 这个正则能完美匹配诸如 cq.ct.6610000.xyz 或 zj.cm.v6.6610000.xyz 
+            domains = re.findall(r'[a-zA-Z0-9\.]+\.6610000\.xyz', html_text)
             
-            for item in nodes_list:
-                if not isinstance(item, dict):
-                    continue
-                    
-                # 1. 动态提取最新域名
-                domain = item.get("domain", "").strip()
-                if not domain:
+            # 去重
+            domains = list(set([d.lower().strip() for d in domains]))
+            print(f"提取到可能存在的所有域名列表: {domains}")
+            
+            # 遍历提取到的域名，动态解析落地机房与省份运营商
+            for domain in domains:
+                # 过滤掉不属于节点格式的纯根域名或主API域名
+                if domain == "cf.6610000.xyz" or domain == "6610000.xyz":
                     continue
                 
-                # 2. 动态提取当前最新测速分配的落地机房 (例如: "东京 · NRT", "香港 · HKG")
-                # 优先取 node 字段，如果没有则取当前分配的 IP
-                node_geo = item.get("node", "").strip()
-                if not node_geo or "未知" in node_geo:
-                    node_geo = item.get("app", "Anycast · 优选")
-                
-                # 3. 聪明地通过二级域名切片动态解析省份和运营商
-                domain_lower = domain.lower()
-                parts = domain_lower.split('.')
+                # 1. 聪明地通过二级域名切片动态解析省份和运营商
+                parts = domain.split('.')
                 prefix = parts[0] if len(parts) > 0 else ""
                 isp_code = parts[1] if len(parts) > 1 else ""
                 
@@ -72,27 +62,52 @@ def fetch_all_dynamic_nodes():
                 else:
                     isp = "公共网络"
                 
-                # 4. 严格按照要求的标准格式组装
-                # 格式示例: cq.ct.6610000.xyz:443#东京 · NRT-【重庆 · 中国电信-优选】
+                # 2. 网页源码中同样会带有实时的 nodeName 变量或机房数据，
+                # 但由于混淆，我们可以用测速接口分配规律或者直接对网页内该域名的机房节点进行动态捕获
+                # 这里我们利用网页内特征做更深一层的机房名字正则提取：
+                # 寻找形如：domain: "cq.ct.6610000.xyz", node: "香港 · HKG" 或者包含机房关键字的结构
+                node_match = re.search(r'"domain"\s*:\s*"' + re.escape(domain) + r'"\s*,\s*"node"\s*:\s*"([^"]+)"', html_text)
+                
+                if node_match:
+                    node_geo = node_match.group(1).strip()
+                else:
+                    # 如果网页把字段压缩了，我们用通用的特征提取当前节点卡片范围内的机房名称
+                    # 比如寻找该域名附近出现的类似 "东京 · NRT"、"香港 · HKG"、"圣何塞 · SJC" 等经典三字码
+                    geo_patterns = [r'东京\s*·\s*[A-Z]+', r'香港\s*·\s*[A-Z]+', r'中国香港\s*·\s*[A-Z]+', 
+                                    r'新加坡\s*·\s*[A-Z]+', r'洛杉矶\s*·\s*[A-Z]+', r'圣何塞\s*·\s*[A-Z]+', 
+                                    r'首尔\s*·\s*[A-Z]+', r'法兰克福\s*·\s*[A-Z]+']
+                    
+                    node_geo = "Anycast · 优选" # 默认兜底
+                    # 在该域名出现的上下文里寻找最贴近的机房名字
+                    pos = html_text.find(domain)
+                    if pos != -1:
+                        context = html_text[max(0, pos-300):min(len(html_text), pos+300)]
+                        for pat in geo_patterns:
+                            m = re.search(pat, context)
+                            if m:
+                                node_geo = m.group(0).strip()
+                                break
+                
+                # 3. 严格按照您要求的格式进行组装
                 formatted_line = f"{domain}:443#{node_geo}-【{province} · {isp}-优选】"
                 results.append(formatted_line)
-                print(f"已捕获 -> {formatted_line}")
+                print(f"成功捕获活跃节点 -> {formatted_line}")
                 
         else:
-            print(f"❌ 动态接口请求失败，状态码: {res.status_code}")
+            print(f"❌ 无法加载网页，状态码: {res.status_code}")
     except Exception as e:
-        print(f"❌ 解析动态数据流时遇到错误: {e}")
+        print(f"❌ 解析网页源码流时遇到错误: {e}")
         
     return results
 
 if __name__ == "__main__":
-    final_proxies = fetch_all_dynamic_nodes()
+    final_proxies = parse_nodes_from_web()
     
     if final_proxies:
         # 排序并去重
         final_proxies = sorted(list(set(final_proxies)))
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
             f.write("\n".join(final_proxies))
-        print(f"\n🎉 完美搞定！已成功将最新的 {len(final_proxies)} 个动态节点写入到 {OUTPUT_FILE}")
+        print(f"\n🎉 完美解决！已成功将最新获取到的 {len(final_proxies)} 个动态节点写入到 {OUTPUT_FILE}")
     else:
-        print("❌ 未抓取到任何数据，请检查网络或稍后重试。")
+        print("❌ 抓取失败：未能从网页源码中匹配到节点信息，输出保持原样。")
