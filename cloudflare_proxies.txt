@@ -1,6 +1,24 @@
-cq.ct.6610000.xyz:443#东京 · NRT-【重庆 · 中国电信-优选】
-fj.ct.6610000.xyz:443#Anycast · 优选-【福建 · 中国电信-优选】
-gd.ct.6610000.xyz:443#圣何塞 · SJC-【广东 · 中国电信-优选】
-gd.cm.6610000.xyz:443#中国香港 · HKG-【广东 · 中国移动-优选】
-gz.cu.6610000.xyz:443#洛杉矶 · LAX-【贵州 · 中国联通-优选】
-js.cu.6610000.xyz:443#法兰克福 · FRA-【江苏 · 中国联通-优选】
+cq.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+fj.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+gd.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+gd.cm.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+gx.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+gx.ct.v6.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+gz.cu.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+gz.cu.v6.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+js.cu.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+js.cm.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+jx.cu.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+ln.cu.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sd.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sx.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sx.cu.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sx.cu.v6.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sh.cu.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sh.cm.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+sc.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+tj.cm.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+yn.ct.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+zj.cm.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+zj.cm.v6.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
+cf.6610000.xyz:443#Anycast · 优选-【动态提取-优选】
